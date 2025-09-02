@@ -83,29 +83,29 @@ def select_multiple_slots(available_slots, quantity):
     Returns list of selected slots.
     """
     selected_slots = []
-    print("\nPlease enter the numbers of all slots you want to select, separated by spaces.")
-    print(f"You need to select {quantity} slots.")
+    print("\nVă rugăm introduceți numerele tuturor sloturilor pe care doriți să le selectați, separate prin spații.")
+    print(f"Trebuie să selectați {quantity} sloturi.")
 
     while True:
         try:
-            selections = input("Enter slot numbers: ").strip().split()
+            selections = input("Introduceți numerele sloturilor: ").strip().split()
 
             # Convert to integers and validate
             slot_numbers = [int(x) for x in selections]
 
             # Validate quantity
             if len(slot_numbers) != quantity:
-                print(f"Please select exactly {quantity} slots.")
+                print(f"Vă rugăm selectați exact {quantity} sloturi.")
                 continue
 
             # Validate numbers and check for duplicates
             if len(set(slot_numbers)) != len(slot_numbers):
-                print("Please don't select the same slot multiple times.")
+                print("Vă rugăm nu selectați același slot de mai multe ori.")
                 continue
 
             # Validate range
             if not all(1 <= num <= len(available_slots) for num in slot_numbers):
-                print(f"Please enter numbers between 1 and {len(available_slots)}")
+                print(f"Vă rugăm introduceți numere între 1 și {len(available_slots)}")
                 continue
 
             # Get the selected slots
@@ -113,7 +113,7 @@ def select_multiple_slots(available_slots, quantity):
             return selected_slots
 
         except ValueError:
-            print("Please enter valid numbers separated by spaces.")
+            print("Vă rugăm introduceți numere valide separate prin spații.")
 
 def get_remaining_reservations(driver):
     """
@@ -179,7 +179,7 @@ def check_and_navigate_calendar(driver, table_xpath, next_month_arrow_xpath, min
     Returns True if navigation was needed, False otherwise.
     """
     available_count = count_available_dates(driver, table_xpath)
-    print(f"Found {available_count} available dates in current view")
+    print(f"S-au găsit {available_count} date disponibile în vizualizarea curentă")
 
     if available_count < minimum_days:
         try:
@@ -188,7 +188,7 @@ def check_and_navigate_calendar(driver, table_xpath, next_month_arrow_xpath, min
                 EC.element_to_be_clickable((By.XPATH, next_month_arrow_xpath))
             )
             next_month_button.click()
-            print("Navigated to next month due to insufficient available dates")
+            print("S-a navigat la luna următoare din cauza datelor disponibile insuficiente")
 
             # Add a small delay to let the calendar update
             time.sleep(2)
@@ -212,45 +212,110 @@ def get_future_dates(days=30):
     return dates
 
 
+def check_for_subscription_error(driver):
+    """
+    Checks for error messages after entering subscription code.
+    Returns tuple (has_error, error_message)
+    """
+    try:
+        # Wait a short time for any error alerts to appear
+        time.sleep(1)
+        
+        # Look for common error alert patterns
+        error_selectors = [
+            ".alert-danger",
+            ".alert-error", 
+            "[class*='alert'][class*='danger']",
+            "[class*='alert'][class*='error']",
+            ".error-message"
+        ]
+        
+        for selector in error_selectors:
+            try:
+                error_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                for element in error_elements:
+                    if element.is_displayed() and element.text.strip():
+                        error_text = element.text.strip()
+                        print(f"Error detected: {error_text}")
+                        return True, error_text
+            except:
+                continue
+        
+        # Check for specific Romanian error message
+        try:
+            elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Nu au fost gasite abonamente')]")
+            for element in elements:
+                if element.is_displayed():
+                    error_text = element.text.strip()
+                    print(f"Subscription error detected: {error_text}")
+                    return True, error_text
+        except:
+            pass
+        
+        return False, ""
+        
+    except Exception as e:
+        print(f"Error while checking for subscription errors: {str(e)}")
+        return False, ""
+
+
 def choose_subscription_code():
     """
     Help user choose between available subscription codes.
     """
-    print("\nAvailable subscription codes:")
+    print("\nCoduri de abonament disponibile:")
     print("1. 5642ece785 Kicky")
     print("2. 3adc06c0e8 Adrian")
 
     while True:
-        choice = input("\nPlease select a code (1 or 2): ")
+        choice = input("\nVă rugăm selectați un cod (1 sau 2): ")
         if choice == "1":
             return "5642ece785"
         elif choice == "2":
             return "3adc06c0e8"
         else:
-            print("Invalid choice. Please select 1 or 2.")
+            print("Alegere invalidă. Vă rugăm selectați 1 sau 2.")
 
 
 def get_max_reservations(driver):
     """
     Extracts the maximum number of available reservations from the span element.
     This function is called right after entering the subscription code.
-    Returns the maximum number of reservations allowed.
+    Returns tuple (success, max_reservations) where success indicates if operation was successful.
     """
     try:
         # Wait for the span element containing the reservation info to be present
-        reservation_span = WebDriverWait(driver, 10).until(
+        # Use shorter timeout to fail faster if element doesn't exist
+        reservation_span = WebDriverWait(driver, 5).until(
             EC.presence_of_element_located((By.XPATH,
                                             "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/button/span[2]"))
         )
 
-        # Extract text and split by ":" to get the number
-        text = reservation_span.text
-        max_reservations = int(text.split(":")[1].strip())
+        # Check if element is visible and contains text
+        if not reservation_span.is_displayed():
+            print("Reservation element found but not visible")
+            return False, 0
 
-        return max_reservations
+        # Extract text and split by ":" to get the number
+        text = reservation_span.text.strip()
+        if not text or ":" not in text:
+            print(f"Unexpected text format in reservation element: '{text}'")
+            return False, 0
+
+        try:
+            max_reservations = int(text.split(":")[1].strip())
+            print(f"Found maximum reservations: {max_reservations}")
+            return True, max_reservations
+        except (ValueError, IndexError) as e:
+            print(f"Could not parse reservation number from text '{text}': {str(e)}")
+            return False, 0
+
+    except TimeoutException:
+        print("Reservation information element not found - this may indicate an invalid subscription")
+        return False, 0
     except Exception as e:
-        print(f"Error getting maximum reservations: {str(e)}")
-        return 0
+        print(f"Unexpected error getting maximum reservations: {str(e)}")
+        return False, 0
 
 def get_quantity(max_reservations):
     """
@@ -258,16 +323,16 @@ def get_quantity(max_reservations):
     """
     while True:
         try:
-            print(f"\nYou can book up to {max_reservations} reservations.")
-            quantity = int(input("How many reservations would you like to make? "))
+            print(f"\nPuteți rezerva până la {max_reservations} rezervări.")
+            quantity = int(input("Câte rezervări doriți să faceți? "))
             if 0 < quantity <= max_reservations:
                 return quantity
             elif quantity <= 0:
-                print("Please enter a number greater than 0.")
+                print("Vă rugăm introduceți un număr mai mare de 0.")
             else:
-                print(f"You cannot book more than {max_reservations} reservations.")
+                print(f"Nu puteți rezerva mai mult de {max_reservations} rezervări.")
         except ValueError:
-            print("Please enter a valid number.")
+            print("Vă rugăm introduceți un număr valid.")
 
 def get_available_dates(driver, table_xpath):
     """
@@ -308,7 +373,7 @@ def process_slot_selection(driver, slot, is_last_slot=False):
     """
     try:
         # Click the slot itself first
-        print(f"\nSelecting slot: {slot['text']}")
+        print(f"\nSe selectează slotul: {slot['text']}")
         slot['element'].click()
         time.sleep(1)  # Wait for the selection to register
 
@@ -318,7 +383,7 @@ def process_slot_selection(driver, slot, is_last_slot=False):
                                         "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div[4]/div[2]/form/div/div[2]/button"))
         )
         selecteaza_button.click()
-        print("Clicked 'Selecteaza' button")
+        print("S-a apăsat butonul 'Selectează'")
         time.sleep(1)  # Wait for cart to appear
 
         # If this is not the last slot, we need to exit the cart
@@ -327,16 +392,16 @@ def process_slot_selection(driver, slot, is_last_slot=False):
                 EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[1]/a"))
             )
             close_cart_button.click()
-            print("Closed cart to continue selection")
+            print("S-a închis coșul pentru a continua selecția")
             time.sleep(1)  # Wait for cart to close
         else:
             # This is the last slot, so click the final button
-            print("Processing final selection...")
+            print("Se procesează selecția finală...")
             final_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[2]/div[2]/a[2]"))
             )
             final_button.click()
-            print("Completed final selection!")
+            print("Selecția finală completată!")
 
     except TimeoutException as e:
         print(f"Timeout error while processing slot: {str(e)}")
@@ -389,10 +454,27 @@ def automate_website_interaction():
 
         time.sleep(1)
 
+        # Check for subscription errors first
+        has_error, error_message = check_for_subscription_error(driver)
+        if has_error:
+            print(f"\n❌ Eroare de abonament:")
+            print(f"   {error_message}")
+            print("\nCauze posibile:")
+            print("• Codul de abonament este invalid sau expirat")
+            print("• Nu au fost găsite abonamente active pentru acest client")
+            print("• Abonamentul a fost deja utilizat complet")
+            print("\nVă rugăm verificați codul de abonament și încercați din nou.")
+            return
+
         # Get maximum reservations before proceeding
-        max_reservations = get_max_reservations(driver)
-        if max_reservations == 0:
-            print("Could not determine maximum reservations. Please check the website.")
+        success, max_reservations = get_max_reservations(driver)
+        if not success or max_reservations == 0:
+            print("\n❌ Nu s-a putut determina numărul maxim de rezervări.")
+            print("De obicei aceasta înseamnă:")
+            print("• Abonamentul este invalid sau inactiv")
+            print("• Structura site-ului s-a schimbat")
+            print("• Au apărut probleme de conexiune")
+            print("\nVă rugăm verificați codul de abonament și încercați din nou.")
             return
 
         # Now get quantity from user based on the maximum
@@ -421,31 +503,31 @@ def automate_website_interaction():
 
         # If we navigated, wait for new calendar to load
         if navigated:
-            time.sleep(1)
+            time.sleep(2)
 
         # Now get available dates from the current view
         available_dates = get_available_dates(driver, calendar_table_xpath)
 
         if available_dates:
-            print("\nAvailable dates found:")
+            print("\nDate disponibile găsite:")
             for i, date_info in enumerate(available_dates, 1):
                 print(f"{i}. {date_info['date']}")
 
             # Let user choose a date
             while True:
                 try:
-                    choice = int(input("\nPlease select a date number: "))
+                    choice = int(input("\nVă rugăm selectați numărul datei: "))
                     if 1 <= choice <= len(available_dates):
                         selected_date = available_dates[choice - 1]
-                        print(f"\nSelected date: {selected_date['date']}")
+                        print(f"\nData selectată: {selected_date['date']}")
                         # Click the selected date
                         selected_date['element'].click()
                         break
-                    print("Invalid selection. Please try again.")
+                    print("Selecție invalidă. Vă rugăm încercați din nou.")
                 except ValueError:
-                    print("Please enter a valid number.")
+                    print("Vă rugăm introduceți un număr valid.")
         else:
-            print("No available dates found in the calendar.")
+            print("Nu s-au găsit date disponibile în calendar.")
 
         remaining_reservations = get_remaining_reservations(driver)
         # print(f"\nYou have {remaining_reservations} reservations remaining")
@@ -454,10 +536,10 @@ def automate_website_interaction():
         available_slots = get_available_timeslots(driver)
 
         if not available_slots:
-            print("No time slots found for this date.")
+            print("Nu s-au găsit intervale orare pentru această dată.")
             return
 
-        print("\nAvailable time slots:")
+        print("\nIntervale orare disponibile:")
         for slot in available_slots:
             print("\n--------------------------------")
             print(f"{slot['number']}. {slot['text']}")
@@ -471,12 +553,12 @@ def automate_website_interaction():
         is_valid, message = validate_slot_selections(selected_slots, quantity, remaining_reservations)
         #
         if not is_valid:
-            print(f"\nError: {message}")
-            print("Please run the script again with valid selections.")
+            print(f"\nEroare: {message}")
+            print("Vă rugăm rulați scriptul din nou cu selecții valide.")
             return
 
         # Process all selected slots
-        print("\nProcessing your selections...")
+        print("\nSe procesează selecțiile dvs...")
         for i, slot in enumerate(selected_slots):
             is_last_slot = (i == len(selected_slots) - 1)  # Check if this is the last slot
             try:
@@ -487,16 +569,16 @@ def automate_website_interaction():
                     time.sleep(1)  # Give more time between selections
 
             except Exception as e:
-                print(f"Failed to process slot {i+1}. Error: {str(e)}")
-                print("Stopping the process...")
+                print(f"Nu s-a putut procesa slotul {i+1}. Eroare: {str(e)}")
+                print("Se oprește procesul...")
                 return
 
-        print("\nAll slots have been successfully processed!")
+        print("\nToate sloturile au fost procesate cu succes!")
 
     except TimeoutException as e:
-        print("Timeout while waiting for element:", str(e))
+        print("Timp expirat în așteptarea elementului:", str(e))
     except Exception as e:
-        print("An error occurred:", str(e))
+        print("A apărut o eroare:", str(e))
     finally:
         driver.quit()
 
