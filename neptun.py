@@ -6,6 +6,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import time
 from datetime import datetime, timedelta
+import argparse
 
 
 def parse_slot_info(slot_element):
@@ -42,7 +43,7 @@ def get_available_timeslots(driver):
     """
     try:
         # Wait for time slots to be present
-        time.sleep(1)
+        time.sleep(0.5)
         slots = driver.find_elements(By.CLASS_NAME, "alert-outline-primary")
 
         available_slots = []
@@ -191,7 +192,7 @@ def check_and_navigate_calendar(driver, table_xpath, next_month_arrow_xpath, min
             print("S-a navigat la luna următoare din cauza datelor disponibile insuficiente")
 
             # Add a small delay to let the calendar update
-            time.sleep(2)
+            time.sleep(0.5)
             return True
         except Exception as e:
             print(f"Error navigating to next month: {str(e)}")
@@ -219,17 +220,17 @@ def check_for_subscription_error(driver):
     """
     try:
         # Wait a short time for any error alerts to appear
-        time.sleep(1)
-        
+        time.sleep(0.5)
+
         # Look for common error alert patterns
         error_selectors = [
             ".alert-danger",
-            ".alert-error", 
+            ".alert-error",
             "[class*='alert'][class*='danger']",
             "[class*='alert'][class*='error']",
             ".error-message"
         ]
-        
+
         for selector in error_selectors:
             try:
                 error_elements = driver.find_elements(By.CSS_SELECTOR, selector)
@@ -240,7 +241,7 @@ def check_for_subscription_error(driver):
                         return True, error_text
             except:
                 continue
-        
+
         # Check for specific Romanian error message
         try:
             elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Nu au fost gasite abonamente')]")
@@ -251,9 +252,9 @@ def check_for_subscription_error(driver):
                     return True, error_text
         except:
             pass
-        
+
         return False, ""
-        
+
     except Exception as e:
         print(f"Error while checking for subscription errors: {str(e)}")
         return False, ""
@@ -375,7 +376,7 @@ def process_slot_selection(driver, slot, is_last_slot=False):
         # Click the slot itself first
         print(f"\nSe selectează slotul: {slot['text']}")
         slot['element'].click()
-        time.sleep(1)  # Wait for the selection to register
+        time.sleep(0.5)  # Wait for the selection to register
 
         # Wait for and click the "Selecteaza" button
         selecteaza_button = WebDriverWait(driver, 10).until(
@@ -384,7 +385,7 @@ def process_slot_selection(driver, slot, is_last_slot=False):
         )
         selecteaza_button.click()
         print("S-a apăsat butonul 'Selectează'")
-        time.sleep(1)  # Wait for cart to appear
+        time.sleep(0.5)  # Wait for cart to appear
 
         # If this is not the last slot, we need to exit the cart
         if not is_last_slot:
@@ -393,7 +394,7 @@ def process_slot_selection(driver, slot, is_last_slot=False):
             )
             close_cart_button.click()
             print("S-a închis coșul pentru a continua selecția")
-            time.sleep(1)  # Wait for cart to close
+            time.sleep(0.5)  # Wait for cart to close
         else:
             # This is the last slot, so click the final button
             print("Se procesează selecția finală...")
@@ -424,16 +425,20 @@ def create_browser_options():
 
     return chrome_options
 
-def automate_website_interaction():
+def automate_website_interaction(headless=False):
     # Get subscription code first
     subscription_code = choose_subscription_code()
 
-    # Create browser options for headless operation
-    # browser_options = create_browser_options()
-
-    # Initialize the Chrome WebDriver with our options
-    # driver = webdriver.Chrome(options=browser_options)
-    driver = webdriver.Chrome()
+    # Initialize the Chrome WebDriver based on mode
+    if headless:
+        # Create browser options for headless operation
+        browser_options = create_browser_options()
+        driver = webdriver.Chrome(options=browser_options)
+        print("🔇 Rulare în modul headless (fără fereastră)")
+    else:
+        # Use default windowed Chrome
+        driver = webdriver.Chrome()
+        print("🪟 Rulare în modul cu fereastră")
 
 
     try:
@@ -452,7 +457,7 @@ def automate_website_interaction():
                                             "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/div/div/button")
         search_button.click()
 
-        time.sleep(1)
+        time.sleep(0.5)
 
         # Check for subscription errors first
         has_error, error_message = check_for_subscription_error(driver)
@@ -492,7 +497,7 @@ def automate_website_interaction():
         next_month_arrow_xpath = "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/thead/tr[2]/th[3]"
 
         # Wait for the calendar to load
-        time.sleep(1)
+        time.sleep(0.5)
 
         # Check current month's available dates and navigate if needed
         navigated = check_and_navigate_calendar(
@@ -503,7 +508,7 @@ def automate_website_interaction():
 
         # If we navigated, wait for new calendar to load
         if navigated:
-            time.sleep(2)
+            time.sleep(0.5)
 
         # Now get available dates from the current view
         available_dates = get_available_dates(driver, calendar_table_xpath)
@@ -566,7 +571,7 @@ def automate_website_interaction():
 
                 # Add a longer pause between slot selections
                 if not is_last_slot:
-                    time.sleep(1)  # Give more time between selections
+                    time.sleep(0.5)  # Give more time between selections
 
             except Exception as e:
                 print(f"Nu s-a putut procesa slotul {i+1}. Eroare: {str(e)}")
@@ -583,4 +588,12 @@ def automate_website_interaction():
         driver.quit()
 
 if __name__ == "__main__":
-    automate_website_interaction()
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(description='Neptune Sauna Booking Script')
+    parser.add_argument('--headless', action='store_true', 
+                       help='Run in headless mode (no browser window)')
+    
+    args = parser.parse_args()
+    
+    # Run the automation with the specified mode
+    automate_website_interaction(headless=args.headless)

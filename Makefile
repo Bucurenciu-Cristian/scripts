@@ -1,9 +1,10 @@
-.PHONY: help install run clean requirements
+.PHONY: help install run run-headless clean requirements
 
 help:
 	@echo "Available commands:"
 	@echo "  make install     - Install dependencies with uv"
-	@echo "  make run         - Run the neptun booking script with uvx"
+	@echo "  make run         - Run the neptun booking script (windowed mode)"
+	@echo "  make run-headless - Run the neptun booking script (headless mode)"
 	@echo "  make clean       - Remove uv lock files and cache"
 	@echo "  make requirements - Update requirements.txt"
 	@echo "  make help        - Show this help message"
@@ -15,6 +16,9 @@ install:
 
 run:
 	uvx --from selenium python neptun.py
+
+run-headless:
+	uvx --from selenium python neptun.py --headless
 
 clean:
 	rm -f uv.lock

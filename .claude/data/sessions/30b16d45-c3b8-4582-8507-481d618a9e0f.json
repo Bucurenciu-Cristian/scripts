@@ -1,0 +1,22 @@
+{
+  "session_id": "30b16d45-c3b8-4582-8507-481d618a9e0f",
+  "prompts": [
+    "/init ",
+    "Create a small makefile to run this project if you can --seq",
+    "I want to be runned with uv or uvx, not pip",
+    "Nicee, create an alias in ~/.zshrc for this make run, it's useful for me.",
+    "I want in get_max_reservations, to somehow not have this one: [Image #1]. Basically for the first item: \"1\" I knew that I didn't had in the page, that specific element. Because [Image #2] this is the actual message. --seq\n\nAnd I want to have it gracefully managed.",
+    "make run is enough",
+    "Great. It works. Now, make sure to translate every output into romanian. But just the part that is rendered in the CLI --seq ",
+    "make run to test it",
+    "/sc:save and /sc:git commit and push",
+    "Yes, actually",
+    "write in readme that I need to use just make run to actually run this small project.",
+    "And let's make it faster. time.sleep() can have decimal number? 0.3 instead of 1, for example? --seq",
+    "Great. Now at the beginning of automate_website_interaction I want to choose easily between the 2 driver, the default one or the one with my custom options. From Makefile to have a specific flag to trigger one or the other. --seq I don't want to enter into the code to change manually this.",
+    "/sc:save ",
+    "/old:session-summary ",
+    "/old:session-summary ",
+    "just create a session.md "
+  ]
+}
