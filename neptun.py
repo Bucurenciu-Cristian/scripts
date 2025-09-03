@@ -7,6 +7,7 @@ from selenium.common.exceptions import TimeoutException
 import time
 from datetime import datetime, timedelta
 import argparse
+import csv
 
 
 def parse_slot_info(slot_element):
@@ -66,17 +67,17 @@ def validate_slot_selections(selected_slots, requested_quantity, remaining_reser
     total_places = sum(slot["available_places"] for slot in selected_slots)
 
     if len(selected_slots) != requested_quantity:
-        return False, f"You must select exactly {requested_quantity} slots."
+        return False, f"Trebuie să selectați exact {requested_quantity} sloturi."
 
     if requested_quantity > remaining_reservations:
-        return False, f"You requested {requested_quantity} slots but you only have {remaining_reservations} reservations remaining."
+        return False, f"Ați solicitat {requested_quantity} sloturi dar aveți doar {remaining_reservations} rezervări rămase."
 
     # Check each slot's availability
     for slot in selected_slots:
         if requested_quantity > slot["available_places"]:
-            return False, f"Slot {slot['number']} only has {slot['available_places']} places available, but you requested {requested_quantity}."
+            return False, f"Slotul {slot['number']} are doar {slot['available_places']} locuri disponibile, dar ați solicitat {requested_quantity}."
 
-    return True, "Selection is valid"
+    return True, "Selecția este validă"
 
 def select_multiple_slots(available_slots, quantity):
     """
@@ -97,11 +98,6 @@ def select_multiple_slots(available_slots, quantity):
             # Validate quantity
             if len(slot_numbers) != quantity:
                 print(f"Vă rugăm selectați exact {quantity} sloturi.")
-                continue
-
-            # Validate numbers and check for duplicates
-            if len(set(slot_numbers)) != len(slot_numbers):
-                print("Vă rugăm nu selectați același slot de mai multe ori.")
                 continue
 
             # Validate range
@@ -140,12 +136,12 @@ def validate_quantity(requested_quantity, remaining_reservations, available_slot
     Returns tuple (is_valid, message)
     """
     if requested_quantity > remaining_reservations:
-        return False, f"You requested {requested_quantity} slots but you only have {remaining_reservations} reservations remaining."
+        return False, f"Ați solicitat {requested_quantity} sloturi dar aveți doar {remaining_reservations} rezervări rămase."
 
     if requested_quantity > len(available_slots):
-        return False, f"You requested {requested_quantity} slots but only {len(available_slots)} time slots are available."
+        return False, f"Ați solicitat {requested_quantity} sloturi dar sunt disponibile doar {len(available_slots)} intervale orare."
 
-    return True, "Quantity is valid"
+    return True, "Cantitatea este validă"
 
 def count_available_dates(driver, table_xpath):
     """
@@ -262,14 +258,73 @@ def check_for_subscription_error(driver):
 
 def choose_subscription_code():
     """
-    Help user choose between available subscription codes.
+    Read subscription codes from input.csv and help user choose between available codes.
     """
-    print("\nCoduri de abonament disponibile:")
+    try:
+        # Try to read subscription codes from CSV file
+        codes = []
+        with open('input.csv', 'r', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                if 'code' in row and 'name' in row and row['code'].strip() and row['name'].strip():
+                    codes.append({
+                        'code': row['code'].strip(),
+                        'name': row['name'].strip()
+                    })
+        
+        if not codes:
+            raise ValueError("Nu s-au găsit coduri valide în input.csv")
+        
+        # Display available codes
+        print("\\nCoduri de abonament disponibile:")
+        for i, code_info in enumerate(codes, 1):
+            print(f"{i}. {code_info['code']} {code_info['name']}")
+        
+        # Get user selection
+        while True:
+            try:
+                choice = input(f"\\nVă rugăm selectați un cod (1-{len(codes)}): ")
+                choice_num = int(choice)
+                
+                if 1 <= choice_num <= len(codes):
+                    selected_code = codes[choice_num - 1]['code']
+                    print(f"Cod selectat: {selected_code} ({codes[choice_num - 1]['name']})")
+                    return selected_code
+                else:
+                    print(f"Alegere invalidă. Vă rugăm selectați între 1 și {len(codes)}.")
+                    
+            except ValueError:
+                print("Vă rugăm introduceți un număr valid.")
+    
+    except FileNotFoundError:
+        print("\\n❌ Fișierul input.csv nu a fost găsit!")
+        print("Creați fișierul input.csv cu următorul format:")
+        print("code,name")
+        print("5642ece785,Kicky")
+        print("3adc06c0e8,Adrian")
+        print("\\nSe folosesc codurile implicite pentru această sesiune...")
+        
+        # Fallback to hardcoded values
+        return choose_subscription_code_fallback()
+    
+    except Exception as e:
+        print(f"\\n❌ Eroare la citirea fișierului input.csv: {str(e)}")
+        print("Se folosesc codurile implicite pentru această sesiune...")
+        
+        # Fallback to hardcoded values
+        return choose_subscription_code_fallback()
+
+
+def choose_subscription_code_fallback():
+    """
+    Fallback function with hardcoded subscription codes when CSV is not available.
+    """
+    print("\\nCoduri de abonament disponibile (implicit):")
     print("1. 5642ece785 Kicky")
     print("2. 3adc06c0e8 Adrian")
 
     while True:
-        choice = input("\nVă rugăm selectați un cod (1 sau 2): ")
+        choice = input("\\nVă rugăm selectați un cod (1 sau 2): ")
         if choice == "1":
             return "5642ece785"
         elif choice == "2":
@@ -347,6 +402,42 @@ def get_available_dates(driver, table_xpath):
         EC.presence_of_element_located((By.XPATH, table_xpath))
     )
 
+    # Extract month and year from calendar header
+    current_month = ""
+    current_year = ""
+    
+    try:
+        # Try to find the month/year display in the calendar header
+        # Look forthe heade r that contains the month/year text
+        header_xpath = table_xpath.replace("/tbody", "/thead/tr[1]/th[2]")
+        month_year_element = driver.find_element(By.XPATH, header_xpath)
+        header_text = month_year_element.text.strip()
+        
+        # Parse month and year from header text (format might be "September 2025" or similar)
+        if header_text:
+            parts = header_text.split()
+            if len(parts) >= 2:
+                month_name = parts[0]
+                current_year = parts[1]
+                
+                # Convert month name to number
+                month_names = {
+                    'ianuarie': '01', 'februarie': '02', 'martie': '03', 'aprilie': '04',
+                    'mai': '05', 'iunie': '06', 'iulie': '07', 'august': '08',
+                    'septembrie': '09', 'octombrie': '10', 'noiembrie': '11', 'decembrie': '12',
+                    'january': '01', 'february': '02', 'march': '03', 'april': '04',
+                    'may': '05', 'june': '06', 'july': '07', 'august': '08',
+                    'september': '09', 'october': '10', 'november': '11', 'december': '12'
+                }
+                current_month = month_names.get(month_name.lower(), "09")  # Default to September
+    except Exception as e:
+        # If we can't extract month/year, use current date as fallback
+        from datetime import datetime
+        now = datetime.now()
+        current_month = f"{now.month:02d}"
+        current_year = str(now.year)
+        print(f"Nu s-a putut extrage antetul calendarului, se folosește luna/anul curent:")
+
     # Find all date cells
     date_cells = table.find_elements(By.TAG_NAME, "td")
 
@@ -355,8 +446,12 @@ def get_available_dates(driver, table_xpath):
         if "disabled" not in cell.get_attribute("class"):
             date_text = cell.text
             if date_text.strip():  # Ensure the cell contains a date
+                # Format as DD-MM-YYYY
+                day = date_text.strip().zfill(2)  # Pad single digits with leading zero
+                formatted_date = f"{day}-{current_month}-{current_year}"
+                
                 available_dates.append({
-                    "date": date_text,
+                    "date": formatted_date,
                     "element": cell
                 })
 
@@ -564,10 +659,27 @@ def automate_website_interaction(headless=False):
 
         # Process all selected slots
         print("\nSe procesează selecțiile dvs...")
+        
+        # Track processed slot numbers to detect when we need fresh element references
+        processed_slot_numbers = []
+        
         for i, slot in enumerate(selected_slots):
             is_last_slot = (i == len(selected_slots) - 1)  # Check if this is the last slot
+            slot_number = slot['number']
+            
             try:
+                # If we've already processed this slot number, we need to re-fetch to avoid stale elements
+                if slot_number in processed_slot_numbers:
+                    print(f"Se reîmprospătează sloturile pentru selecția duplicată (slot {slot_number})")
+                    fresh_slots = get_available_timeslots(driver)
+                    if fresh_slots and slot_number <= len(fresh_slots):
+                        slot = fresh_slots[slot_number - 1]  # Get fresh element reference
+                    else:
+                        print(f"Eroare: Nu s-a putut reîmprospăta slotul {slot_number}")
+                        continue
+                
                 process_slot_selection(driver, slot, is_last_slot)
+                processed_slot_numbers.append(slot_number)
 
                 # Add a longer pause between slot selections
                 if not is_last_slot:
