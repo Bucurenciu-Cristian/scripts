@@ -540,17 +540,23 @@ class SelectorRegistry:
             "description": "Login submit button",
         },
         # Appointments page selectors
-        "appointment_list_item": {
-            "css": ".appointment, .booking-item, tr.appointment, .reservation-item, table tbody tr",
-            "xpath": "//*[contains(@class, 'appointment') or contains(@class, 'booking') or contains(@class, 'reservation')]",
+        "appointment_table_row": {
+            "css": "table.table tbody tr",
+            "xpath": "//table[contains(@class, 'table')]//tbody//tr",
             "text": None,
-            "description": "Appointment/booking list items",
+            "description": "Appointment table rows",
         },
-        "appointment_date": {
-            "css": ".appointment-date, .date, td.date",
-            "xpath": "//*[contains(@class, 'date')]",
-            "text": None,
-            "description": "Appointment date element",
+        "appointment_delete_button": {
+            "css": "button.deleteAppButton",
+            "xpath": "//button[contains(@class, 'deleteAppButton')]",
+            "text": "Șterge",
+            "description": "Delete appointment button",
+        },
+        "delete_confirm_button": {
+            "css": ".swal2-confirm, button.swal2-confirm, .btn-danger[data-dismiss]",
+            "xpath": "//button[contains(@class, 'swal2-confirm')] | //button[contains(text(), 'Da') or contains(text(), 'Confirm')]",
+            "text": "Da",
+            "description": "Confirm delete dialog button",
         },
     }
 
@@ -1983,6 +1989,313 @@ def verify_booking(driver, finder, expected_date, expected_time_slot, credential
         }
 
 
+# =============================================================================
+# APPOINTMENT MANAGEMENT (STATUS & DELETE)
+# =============================================================================
+
+def get_current_appointments(driver, finder, credentials=None):
+    """
+    Navigate to appointments page and retrieve all current bookings.
+
+    Returns:
+        list of dicts with appointment info: [
+            {
+                'index': 1,
+                'resource': 'Sauna',
+                'datetime': '21.01.2026 10:30 - 14:00',
+                'date': '21.01.2026',
+                'time': '10:30 - 14:00',
+                'places': '1',
+                'price': '0.00',
+                'delete_id': 'RHcxWE04KzI',
+                'element': <row element>
+            },
+            ...
+        ]
+    """
+    appointments_url = "https://bpsb.registo.ro/client-user/appointments"
+    appointments = []
+
+    try:
+        # Navigate to appointments page
+        driver.get(appointments_url)
+        time.sleep(1)
+
+        # Handle login if required
+        if is_login_page(driver):
+            print("Pagina necesită autentificare...")
+
+            if credentials is None:
+                credentials = get_credentials()
+
+            if not has_credentials():
+                print("❌ Credențiale lipsă. Adăugați NEPTUN_EMAIL și NEPTUN_PASSWORD în .env")
+                return []
+
+            login_success = perform_login(driver, finder, credentials)
+            if not login_success:
+                print("❌ Autentificare eșuată")
+                return []
+
+            # Navigate again after login
+            driver.get(appointments_url)
+            time.sleep(1)
+
+        # Wait for table to load
+        WebDriverWait(driver, TIMEOUT_MEDIUM).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table.table tbody"))
+        )
+        time.sleep(0.5)
+
+        # Find all appointment rows
+        rows = driver.find_elements(By.CSS_SELECTOR, "table.table tbody tr")
+
+        for idx, row in enumerate(rows, 1):
+            try:
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) >= 5:
+                    # Extract appointment data
+                    resource = cells[1].text.strip()
+                    datetime_text = cells[2].text.strip()
+                    places = cells[3].text.strip()
+                    price = cells[4].text.strip()
+
+                    # Parse date and time from datetime string (e.g., "21.01.2026 10:30 - 14:00")
+                    date_part = ""
+                    time_part = ""
+                    if datetime_text:
+                        parts = datetime_text.split(' ', 1)
+                        if len(parts) >= 1:
+                            date_part = parts[0]
+                        if len(parts) >= 2:
+                            time_part = parts[1]
+
+                    # Get delete button data-id
+                    delete_id = ""
+                    try:
+                        delete_btn = row.find_element(By.CSS_SELECTOR, "button.deleteAppButton")
+                        delete_id = delete_btn.get_attribute("data-id")
+                    except:
+                        pass
+
+                    appointments.append({
+                        'index': idx,
+                        'resource': resource,
+                        'datetime': datetime_text,
+                        'date': date_part,
+                        'time': time_part,
+                        'places': places,
+                        'price': price,
+                        'delete_id': delete_id,
+                        'element': row
+                    })
+            except Exception as e:
+                continue
+
+        return appointments
+
+    except Exception as e:
+        print(f"❌ Eroare la încărcarea programărilor: {str(e)}")
+        return []
+
+
+def display_appointments(appointments):
+    """Display appointments in a formatted table."""
+    if not appointments:
+        print("\n📭 Nu există programări viitoare.")
+        return
+
+    print(f"\n{'='*70}")
+    print("PROGRAMĂRI VIITOARE")
+    print(f"{'='*70}")
+    print(f"{'Nr.':<5} {'Resursă':<12} {'Data':<12} {'Interval':<18} {'Locuri':<8} {'Preț':<8}")
+    print(f"{'-'*70}")
+
+    for apt in appointments:
+        print(f"{apt['index']:<5} {apt['resource']:<12} {apt['date']:<12} {apt['time']:<18} {apt['places']:<8} {apt['price']:<8}")
+
+    print(f"{'='*70}")
+    print(f"Total programări: {len(appointments)}")
+
+
+def delete_appointment(driver, finder, appointment, confirm=True):
+    """
+    Delete a specific appointment.
+
+    Parameters:
+    - driver: Selenium WebDriver instance
+    - finder: ElementFinder instance
+    - appointment: dict with appointment info (must include 'delete_id' or 'element')
+    - confirm: If True, wait for and click confirmation dialog
+
+    Returns:
+        tuple: (success: bool, message: str)
+    """
+    try:
+        delete_id = appointment.get('delete_id')
+
+        if not delete_id:
+            return False, "ID-ul de ștergere nu este disponibil"
+
+        # Find and click the delete button for this appointment
+        delete_btn = driver.find_element(
+            By.CSS_SELECTOR,
+            f"button.deleteAppButton[data-id='{delete_id}']"
+        )
+
+        # Scroll to button and click
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", delete_btn)
+        time.sleep(0.2)
+        delete_btn.click()
+
+        print(f"Se șterge programarea din {appointment['date']} {appointment['time']}...")
+        time.sleep(0.5)
+
+        if confirm:
+            # Wait for confirmation dialog (usually SweetAlert2)
+            try:
+                confirm_btn = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".swal2-confirm, button.swal2-confirm"))
+                )
+                confirm_btn.click()
+                time.sleep(0.5)
+                print(f"✓ Programarea a fost ștearsă cu succes!")
+                return True, "Programare ștearsă cu succes"
+            except TimeoutException:
+                # Maybe no confirmation needed, check if already deleted
+                return True, "Programare ștearsă (fără confirmare)"
+
+        return True, "Buton de ștergere apăsat"
+
+    except Exception as e:
+        return False, f"Eroare la ștergere: {str(e)}"
+
+
+def run_status_mode(headless=False):
+    """
+    Run in status mode - display current appointments.
+    """
+    print("\n" + "="*50)
+    print("VERIFICARE STATUS PROGRAMĂRI")
+    print("="*50)
+
+    # Initialize browser
+    if headless:
+        browser_options = create_browser_options()
+        driver = webdriver.Chrome(options=browser_options)
+        print("🔇 Mod headless")
+    else:
+        driver = webdriver.Chrome()
+        print("🪟 Mod cu fereastră")
+
+    finder = ElementFinder(driver)
+
+    try:
+        # Get appointments
+        appointments = get_current_appointments(driver, finder)
+
+        # Display them
+        display_appointments(appointments)
+
+        return ExitCode.SUCCESS
+
+    except Exception as e:
+        print(f"❌ Eroare: {str(e)}")
+        return ExitCode.UNKNOWN_ERROR
+    finally:
+        driver.quit()
+
+
+def run_delete_mode(headless=False):
+    """
+    Run in delete mode - interactively delete appointments.
+    """
+    print("\n" + "="*50)
+    print("ȘTERGERE PROGRAMĂRI")
+    print("="*50)
+
+    # Initialize browser
+    if headless:
+        browser_options = create_browser_options()
+        driver = webdriver.Chrome(options=browser_options)
+        print("🔇 Mod headless")
+    else:
+        driver = webdriver.Chrome()
+        print("🪟 Mod cu fereastră")
+
+    finder = ElementFinder(driver)
+
+    try:
+        # Get appointments
+        appointments = get_current_appointments(driver, finder)
+
+        if not appointments:
+            print("\n📭 Nu există programări de șters.")
+            return ExitCode.SUCCESS
+
+        # Display them
+        display_appointments(appointments)
+
+        # Ask which to delete
+        print("\nOpțiuni:")
+        print("  - Introduceți numerele programărilor de șters (separate prin spații)")
+        print("  - Introduceți 'all' pentru a șterge toate")
+        print("  - Introduceți 'q' pentru a anula")
+
+        choice = input("\nCe programări doriți să ștergeți? ").strip().lower()
+
+        if choice == 'q' or choice == '':
+            print("Operațiune anulată.")
+            return ExitCode.SUCCESS
+
+        if choice == 'all':
+            to_delete = appointments
+        else:
+            try:
+                indices = [int(x) for x in choice.split()]
+                to_delete = [apt for apt in appointments if apt['index'] in indices]
+            except ValueError:
+                print("❌ Selecție invalidă.")
+                return ExitCode.UNKNOWN_ERROR
+
+        if not to_delete:
+            print("❌ Nicio programare selectată.")
+            return ExitCode.SUCCESS
+
+        # Confirm deletion
+        print(f"\nSe vor șterge {len(to_delete)} programare(ări):")
+        for apt in to_delete:
+            print(f"  - {apt['date']} {apt['time']} ({apt['resource']})")
+
+        confirm = input("\nSigur doriți să continuați? (da/nu): ").strip().lower()
+        if confirm not in ['da', 'yes', 'y']:
+            print("Operațiune anulată.")
+            return ExitCode.SUCCESS
+
+        # Delete each appointment
+        deleted_count = 0
+        for apt in to_delete:
+            # Refresh page to avoid stale elements
+            if deleted_count > 0:
+                driver.get("https://bpsb.registo.ro/client-user/appointments")
+                time.sleep(1)
+
+            success, message = delete_appointment(driver, finder, apt)
+            if success:
+                deleted_count += 1
+            else:
+                print(f"⚠ Nu s-a putut șterge: {message}")
+
+        print(f"\n✓ {deleted_count}/{len(to_delete)} programări șterse.")
+        return ExitCode.SUCCESS
+
+    except Exception as e:
+        print(f"❌ Eroare: {str(e)}")
+        return ExitCode.UNKNOWN_ERROR
+    finally:
+        driver.quit()
+
+
 def create_browser_options():
     """
     Creates and configures Chrome options for headless operation.
@@ -2247,6 +2560,8 @@ def main():
 Examples:
   python neptun.py                    # Interactive booking (windowed)
   python neptun.py --headless         # Interactive booking (headless)
+  python neptun.py --status           # View current appointments
+  python neptun.py --delete           # Delete appointments interactively
   python neptun.py --collect          # Collect availability data (all subscriptions)
   python neptun.py --collect -s CODE  # Collect for specific subscription
   python neptun.py --collect -v       # Collect with verbose output
@@ -2264,6 +2579,10 @@ Exit codes:
     )
     parser.add_argument('--headless', action='store_true',
                        help='Run in headless mode (no browser window)')
+    parser.add_argument('--status', action='store_true',
+                       help='View current appointments (requires login credentials in .env)')
+    parser.add_argument('--delete', action='store_true',
+                       help='Delete appointments interactively (requires login credentials in .env)')
     parser.add_argument('--collect', action='store_true',
                        help='Silent data collection mode (for cron jobs)')
     parser.add_argument('--all', action='store_true',
@@ -2276,6 +2595,15 @@ Exit codes:
                        help=f'Database file path (default: {DB_FILE})')
 
     args = parser.parse_args()
+
+    # Handle status and delete modes (separate flow, no database needed)
+    if args.status:
+        exit_code = run_status_mode(headless=args.headless)
+        sys.exit(exit_code)
+
+    if args.delete:
+        exit_code = run_delete_mode(headless=args.headless)
+        sys.exit(exit_code)
 
     # Collect mode implies headless
     if args.collect:
