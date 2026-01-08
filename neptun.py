@@ -301,6 +301,91 @@ class DatabaseManager:
             ''')
         return cursor.fetchone()
 
+    def get_slot_popularity(self, days=30):
+        """Get slot popularity by time slot across all dates."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                time_slot,
+                COUNT(*) as observations,
+                ROUND(AVG(spots_available), 1) as avg_available,
+                MIN(spots_available) as min_available,
+                MAX(spots_available) as max_available,
+                SUM(CASE WHEN spots_available = 0 THEN 1 ELSE 0 END) as fully_booked_count
+            FROM availability
+            WHERE date >= date('now', ? || ' days')
+              AND time_slot LIKE '%:%'
+            GROUP BY time_slot
+            ORDER BY avg_available ASC
+        ''', (f'-{days}',))
+        return cursor.fetchall()
+
+    def get_day_of_week_trends(self, days=30):
+        """Get availability trends by day of week."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                CASE strftime('%w', date)
+                    WHEN '0' THEN 'Duminică'
+                    WHEN '1' THEN 'Luni'
+                    WHEN '2' THEN 'Marți'
+                    WHEN '3' THEN 'Miercuri'
+                    WHEN '4' THEN 'Joi'
+                    WHEN '5' THEN 'Vineri'
+                    WHEN '6' THEN 'Sâmbătă'
+                END as day_name,
+                strftime('%w', date) as day_num,
+                ROUND(AVG(spots_available), 1) as avg_available,
+                COUNT(*) as observations
+            FROM availability
+            WHERE date >= date('now', ? || ' days')
+              AND time_slot LIKE '%:%'
+            GROUP BY day_num
+            ORDER BY day_num
+        ''', (f'-{days}',))
+        return cursor.fetchall()
+
+    def get_hourly_demand(self, days=30):
+        """Get demand by time slot and day combination."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                CASE strftime('%w', date)
+                    WHEN '0' THEN 'Dum'
+                    WHEN '1' THEN 'Lun'
+                    WHEN '2' THEN 'Mar'
+                    WHEN '3' THEN 'Mie'
+                    WHEN '4' THEN 'Joi'
+                    WHEN '5' THEN 'Vin'
+                    WHEN '6' THEN 'Sam'
+                END as day_short,
+                time_slot,
+                ROUND(AVG(spots_available), 1) as avg_available,
+                SUM(CASE WHEN spots_available = 0 THEN 1 ELSE 0 END) as fully_booked
+            FROM availability
+            WHERE date >= date('now', ? || ' days')
+              AND time_slot LIKE '%:%'
+            GROUP BY strftime('%w', date), time_slot
+            ORDER BY strftime('%w', date), time_slot
+        ''', (f'-{days}',))
+        return cursor.fetchall()
+
+    def get_collection_stats(self):
+        """Get data collection statistics."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 
+                COUNT(DISTINCT date) as unique_dates,
+                COUNT(DISTINCT subscription_code) as unique_subscriptions,
+                COUNT(*) as total_records,
+                MIN(timestamp) as first_collection,
+                MAX(timestamp) as last_collection,
+                COUNT(DISTINCT date(timestamp)) as collection_days
+            FROM availability
+            WHERE time_slot LIKE '%:%'
+        ''')
+        return cursor.fetchone()
+
     def close(self):
         """Close database connection."""
         if self.conn:
@@ -462,8 +547,8 @@ class SelectorRegistry:
             # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/button
         },
         "calendar_table": {
-            "css": ".datepicker table tbody, table.table tbody, table tbody",
-            "xpath": "//table[contains(@class, 'datepicker') or contains(@class, 'table')]//tbody",
+            "css": ".datepicker table tbody, table.table tbody, .datepicker tbody, table tbody",
+            "xpath": "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/tbody | //table[contains(@class, 'datepicker')]//tbody | //div[contains(@class, 'datepicker')]//table/tbody",
             "text": None,
             "description": "Calendar date picker table body",
             # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/tbody
@@ -1082,9 +1167,13 @@ class AvailabilityCollector:
     def collect_for_subscription(self, code, name):
         """
         Collect all available dates and slots for one subscription.
+        Now supports multi-month navigation.
         Returns number of slots collected.
         """
         collected_count = 0
+        max_months_to_check = 2  # Check current and next month
+        months_checked = 0
+        seen_dates = set()  # Track processed dates to avoid duplicates
 
         # Navigate to the booking page
         self.driver.get("https://bpsb.registo.ro/client-interface/appointment-subscription/step1")
@@ -1110,81 +1199,53 @@ class AvailabilityCollector:
         # Click sauna option
         try:
             self.finder.wait_and_click("sauna_option_button")
-            time.sleep(0.5)
+            time.sleep(2)  # Wait for calendar to load (increased from 0.5s)
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Nu s-a putut selecta opțiunea", f"Failed to click sauna option: {e}")
             raise
 
-        # Get available dates from calendar
-        is_loaded, _ = self.verifier.verify_calendar_loaded()
+        # Get available dates from calendar (use longer timeout)
+        is_loaded, _ = self.verifier.verify_calendar_loaded(timeout=TIMEOUT_LONG)
         if not is_loaded:
             raise BookingError("Calendar failed to load")
 
-        # Extract dates - just get the date strings first, not element references
-        available_dates = self._extract_available_dates()
-        date_strings = [d['date'] for d in available_dates]
+        # Process multiple months
+        while months_checked < max_months_to_check:
+            month_name, year = self._get_current_calendar_month()
+            if self.logger:
+                self.logger.debug(
+                    f"Se procesează luna: {month_name} {year}",
+                    f"Processing month: {month_name} {year}"
+                )
 
-        # Process each date by re-fetching elements each time (to avoid stale references)
-        for date_str in date_strings:
-            try:
-                # Re-fetch the calendar and find the date element fresh
-                fresh_dates = self._extract_available_dates()
-                date_element = None
-                for d in fresh_dates:
-                    if d['date'] == date_str:
-                        date_element = d['element']
-                        break
+            # Extract dates from current view
+            available_dates = self._extract_available_dates()
+            date_strings = [d['date'] for d in available_dates if d['date'] not in seen_dates]
 
-                if not date_element:
+            if self.logger and date_strings:
+                self.logger.debug(
+                    f"S-au găsit {len(date_strings)} date noi în {month_name}",
+                    f"Found {len(date_strings)} new dates in {month_name}"
+                )
+
+            # Process each date
+            for date_str in date_strings:
+                seen_dates.add(date_str)
+                collected_count += self._process_single_date(date_str, code, name)
+
+            months_checked += 1
+
+            # Try to navigate to next month if we have more to check
+            if months_checked < max_months_to_check:
+                if not self._navigate_to_next_month():
                     if self.logger:
-                        self.logger.warning(
-                            f"Nu s-a găsit data {date_str}",
-                            f"Date {date_str} not found in calendar"
+                        self.logger.debug(
+                            "Nu se poate naviga mai departe",
+                            "Cannot navigate further, stopping"
                         )
-                    continue
-
-                # Click on the date to see slots
-                date_element.click()
-                time.sleep(0.5)
-
-                # Get slots for this date
-                slots = self._extract_slots_for_date()
-
-                for slot in slots:
-                    self.db.log_availability(
-                        self.session_id,
-                        code,
-                        date_str,
-                        slot['time'],
-                        slot['available'],
-                        subscription_name=name
-                    )
-                    collected_count += 1
-
-                if self.logger and slots:
-                    self.logger.debug(
-                        f"Colectat {len(slots)} sloturi pentru {date_str}",
-                        f"Collected {len(slots)} slots for {date_str}"
-                    )
-
-            except StaleElementReferenceException:
-                # If still stale, try once more with fresh fetch
-                if self.logger:
-                    self.logger.warning(
-                        f"Element învechit pentru {date_str}, se reîncearcă",
-                        f"Stale element for {date_str}, retrying"
-                    )
-                time.sleep(0.5)
-                continue
-
-            except Exception as e:
-                if self.logger:
-                    self.logger.warning(
-                        f"Nu s-au putut colecta sloturile pentru {date_str}",
-                        f"Failed to collect slots for {date_str}: {e}"
-                    )
-                continue
+                    break  # Cannot navigate further
+                time.sleep(0.5)  # Wait for calendar to update
 
         return collected_count
 
@@ -1244,42 +1305,180 @@ class AvailabilityCollector:
     def _extract_slots_for_date(self):
         """Extract time slots and availability for the currently selected date."""
         slots = []
+        
+        # Regex patterns for valid time slots
+        # Matches: "07:00 - 10:30", "10:30-14:00", etc.
+        TIME_SLOT_PATTERN = re.compile(r'^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$')
+        # Matches: "Grupa 07:00 - 10:30" format
+        GRUPA_TIME_PATTERN = re.compile(r'Grupa\s+(\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2})')
+        
+        # Known error message patterns to skip
+        ERROR_PATTERNS = [
+            "nu au fost gasite",
+            "nu exista", 
+            "indisponibil",
+            "nicio disponibilitate",
+            "nu sunt disponibile"
+        ]
 
         try:
             slot_elements, _ = self.finder.find_all("time_slot")
 
             for slot_element in slot_elements:
                 slot_text = slot_element.text.strip()
-
-                # Skip "no slots available" messages
-                if "Nu au fost gasite" in slot_text or not slot_text:
+                
+                # Skip empty text
+                if not slot_text:
+                    continue
+                
+                # Check if any error pattern matches (case-insensitive)
+                is_error = any(pattern in slot_text.lower() for pattern in ERROR_PATTERNS)
+                if is_error:
+                    if self.logger:
+                        self.logger.debug(
+                            f"Se sare mesajul de eroare: {slot_text[:50]}...",
+                            f"Skipping error message: {slot_text[:50]}..."
+                        )
                     continue
 
+                time_str = None
                 available_places = 0
 
-                # Parse availability from text
+                # Parse each line looking for time and availability
                 for line in slot_text.split('\n'):
+                    line = line.strip()
+                    
+                    # Check for availability count
                     if "Locuri disponibile:" in line:
                         try:
                             available_places = int(line.split(':')[1].strip())
                         except (ValueError, IndexError):
                             pass
-                        break
+                        continue
+                    
+                    # Check for direct time format "07:00 - 10:30"
+                    if TIME_SLOT_PATTERN.match(line):
+                        time_str = line
+                        continue
+                    
+                    # Check for "Grupa 07:00 - 10:30" format
+                    grupa_match = GRUPA_TIME_PATTERN.search(line)
+                    if grupa_match:
+                        time_str = grupa_match.group(1)
+                        continue
 
-                # Try to extract time from slot text (first line usually)
-                time_str = slot_text.split('\n')[0].strip() if slot_text else "Unknown"
-
-                slots.append({
-                    "time": time_str,
-                    "available": available_places,
-                    "text": slot_text
-                })
+                # Only add if we found a valid time string
+                if time_str:
+                    slots.append({
+                        "time": time_str,
+                        "available": available_places,
+                        "text": slot_text
+                    })
+                else:
+                    # Log warning for unrecognized slot format (for debugging)
+                    if self.logger and slot_text:
+                        self.logger.debug(
+                            f"Format slot nerecunoscut: {slot_text[:50]}",
+                            f"Unrecognized slot format: {slot_text[:50]}"
+                        )
 
         except Exception as e:
             # No slots found is not an error - it's just an empty day
-            pass
+            if self.logger:
+                self.logger.debug(
+                    f"Niciun slot găsit sau eroare",
+                    f"No slots found or error: {e}"
+                )
 
         return slots
+
+    def _navigate_to_next_month(self):
+        """Navigate to the next month in the calendar. Returns True if successful."""
+        try:
+            self.finder.wait_and_click("next_month_arrow")
+            time.sleep(0.5)  # Wait for calendar to update
+            return True
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(
+                    "Nu s-a putut naviga la luna următoare",
+                    f"Could not navigate to next month: {e}"
+                )
+            return False
+
+    def _get_current_calendar_month(self):
+        """Get the current month/year displayed in calendar header."""
+        try:
+            header_text = self.finder.get_text("calendar_header", required=False)
+            if header_text:
+                parts = header_text.split()
+                if len(parts) >= 2:
+                    return parts[0].lower(), parts[1]  # month_name, year
+        except Exception:
+            pass
+        return None, None
+
+    def _process_single_date(self, date_str, code, name):
+        """Process a single date and collect slot data. Returns slots collected count."""
+        try:
+            # Re-fetch the calendar and find the date element fresh
+            fresh_dates = self._extract_available_dates()
+            date_element = None
+            for d in fresh_dates:
+                if d['date'] == date_str:
+                    date_element = d['element']
+                    break
+
+            if not date_element:
+                if self.logger:
+                    self.logger.debug(
+                        f"Nu s-a găsit data {date_str}",
+                        f"Date {date_str} not found in calendar"
+                    )
+                return 0
+
+            # Click on the date to see slots
+            date_element.click()
+            time.sleep(0.5)
+
+            # Get slots for this date
+            slots = self._extract_slots_for_date()
+
+            slots_logged = 0
+            for slot in slots:
+                self.db.log_availability(
+                    self.session_id,
+                    code,
+                    date_str,
+                    slot['time'],
+                    slot['available'],
+                    subscription_name=name
+                )
+                slots_logged += 1
+
+            if self.logger and slots:
+                self.logger.debug(
+                    f"Colectat {len(slots)} sloturi pentru {date_str}",
+                    f"Collected {len(slots)} slots for {date_str}"
+                )
+
+            return slots_logged
+
+        except StaleElementReferenceException:
+            if self.logger:
+                self.logger.debug(
+                    f"Element învechit pentru {date_str}, se sare",
+                    f"Stale element for {date_str}, skipping"
+                )
+            return 0
+
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(
+                    f"Nu s-au putut colecta sloturile pentru {date_str}",
+                    f"Failed to collect slots for {date_str}: {e}"
+                )
+            return 0
 
     def set_session(self, session_id):
         """Set the session ID for logging."""
@@ -2296,6 +2495,106 @@ def run_delete_mode(headless=False):
         driver.quit()
 
 
+def run_trends_mode(days=30, db_path=DB_FILE):
+    """
+    Display availability trends and analytics.
+    """
+    print("\n" + "="*60)
+    print("ANALIZĂ DISPONIBILITATE SAUNA")
+    print("="*60)
+
+    db = DatabaseManager(db_path)
+
+    try:
+        # Collection stats
+        stats = db.get_collection_stats()
+        if not stats or stats[2] == 0:
+            print("\n❌ Nu există date colectate. Rulați mai întâi:")
+            print("   make collect")
+            return ExitCode.NO_AVAILABILITY
+
+        print(f"\n📊 Statistici Colectare:")
+        print(f"   Date unice: {stats[0]}")
+        print(f"   Abonamente: {stats[1]}")
+        print(f"   Total înregistrări: {stats[2]}")
+        print(f"   Prima colectare: {stats[3]}")
+        print(f"   Ultima colectare: {stats[4]}")
+        print(f"   Zile de colectare: {stats[5]}")
+
+        # Slot popularity
+        print(f"\n🕐 Popularitate pe Intervale Orare (ultimele {days} zile):")
+        print(f"{'Interval':<20} {'Obs.':<8} {'Med.':<8} {'Min':<6} {'Max':<6} {'Full':<6}")
+        print("-" * 60)
+
+        slot_stats = db.get_slot_popularity(days)
+        if slot_stats:
+            for row in slot_stats:
+                time_slot, obs, avg, min_val, max_val, fully_booked = row
+                print(f"{time_slot:<20} {obs:<8} {avg:<8} {min_val:<6} {max_val:<6} {fully_booked:<6}")
+        else:
+            print("   Nu există date pentru perioada selectată.")
+
+        # Day of week trends
+        print(f"\n📅 Tendințe pe Zile ale Săptămânii:")
+        print(f"{'Zi':<12} {'Obs.':<8} {'Med. Disponibile':<18}")
+        print("-" * 40)
+
+        dow_stats = db.get_day_of_week_trends(days)
+        if dow_stats:
+            for row in dow_stats:
+                day_name, _, avg_avail, obs = row
+                bar = "█" * int(avg_avail) if avg_avail else ""
+                print(f"{day_name:<12} {obs:<8} {avg_avail:<6} {bar}")
+        else:
+            print("   Nu există date pentru perioada selectată.")
+
+        # Heatmap-style output
+        print(f"\n🔥 Hartă Cerere (roșu = popular, verde = disponibil):")
+        slots_headers = ["07:00-10:30", "10:30-14:00", "14:00-17:30", "17:30-21:00"]
+        print(f"{'Zi':<5}", end="")
+        for s in slots_headers:
+            print(f"{s:<14}", end="")
+        print()
+        print("-" * 60)
+
+        hourly_data = db.get_hourly_demand(days)
+        # Organize by day
+        by_day = {}
+        for row in hourly_data:
+            day, slot, avg, full = row
+            if day not in by_day:
+                by_day[day] = {}
+            by_day[day][slot] = (avg, full)
+
+        for day in ['Lun', 'Mar', 'Mie', 'Joi', 'Vin', 'Sam', 'Dum']:
+            if day in by_day:
+                print(f"{day:<5}", end="")
+                for slot_header in slots_headers:
+                    # Normalize slot format for matching (with spaces around dash)
+                    slot_key = slot_header.replace("-", " - ")
+                    if slot_key in by_day[day]:
+                        avg, _ = by_day[day][slot_key]
+                        # Color indicator based on availability
+                        if avg >= 4:
+                            indicator = "🟢"
+                        elif avg >= 2:
+                            indicator = "🟡"
+                        else:
+                            indicator = "🔴"
+                        print(f"{indicator} {avg:>5}     ", end="")
+                    else:
+                        print(f"{'--':>13} ", end="")
+                print()
+
+        print("\n💡 Legendă: 🟢 Disponibil (4+) | 🟡 Moderat (2-3) | 🔴 Popular (<2)")
+        print("="*60)
+
+        return ExitCode.SUCCESS
+
+    finally:
+        db.close()
+
+
 def create_browser_options():
     """
     Creates and configures Chrome options for headless operation.
@@ -2565,6 +2864,8 @@ Examples:
   python neptun.py --collect          # Collect availability data (all subscriptions)
   python neptun.py --collect -s CODE  # Collect for specific subscription
   python neptun.py --collect -v       # Collect with verbose output
+  python neptun.py --trends           # Show availability trends (30 days)
+  python neptun.py --trends --trends-days 7  # Show trends for last 7 days
 
 Exit codes:
   0  - Success
@@ -2593,6 +2894,10 @@ Exit codes:
                        help='Verbose output')
     parser.add_argument('--db', type=str, default=DB_FILE,
                        help=f'Database file path (default: {DB_FILE})')
+    parser.add_argument('--trends', action='store_true',
+                       help='Show availability trends and analytics')
+    parser.add_argument('--trends-days', type=int, default=30,
+                       help='Number of days for trend analysis (default: 30)')
 
     args = parser.parse_args()
 
@@ -2603,6 +2908,10 @@ Exit codes:
 
     if args.delete:
         exit_code = run_delete_mode(headless=args.headless)
+        sys.exit(exit_code)
+
+    if args.trends:
+        exit_code = run_trends_mode(days=args.trends_days, db_path=args.db)
         sys.exit(exit_code)
 
     # Collect mode implies headless

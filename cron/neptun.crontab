@@ -1,0 +1,23 @@
+# Neptune Sauna Availability Collector
+# =====================================
+# Install with: make install-cron
+# View with: crontab -l
+# Remove with: crontab -r (removes ALL cron jobs!)
+#
+# For Omarchy/Arch Linux, you may need to start cronie first:
+#   sudo systemctl enable cronie
+#   sudo systemctl start cronie
+
+SHELL=/bin/bash
+PATH=/home/kicky/.local/bin:/usr/local/bin:/usr/bin:/bin
+HOME=/home/kicky
+
+# Run data collection daily at 12:00 PM (noon)
+0 12 * * * cd /home/kicky/work/06-resources/Script\ Neptun && /home/kicky/.local/bin/uv run python neptun.py --collect >> ~/logs/neptun-collect.log 2>&1
+
+# Optional: Run twice daily (12 PM and 6 PM) for more data points
+# Uncomment the line below and comment the one above to enable
+# 0 12,18 * * * cd /home/kicky/work/06-resources/Script\ Neptun && /home/kicky/.local/bin/uv run python neptun.py --collect >> ~/logs/neptun-collect.log 2>&1
+
+# Weekly log rotation - keep only last 30 days of logs
+0 3 * * 0 find ~/logs -name "neptun-*.log" -mtime +30 -delete 2>/dev/null
