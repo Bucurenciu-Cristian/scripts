@@ -512,18 +512,16 @@ class SelectorRegistry:
 
     SELECTORS = {
         "subscription_input": {
-            "css": "form div input[type='text'], form input[type='text'], form input[type='search']",
-            "xpath": "//form//input[@type='text' or @type='search']",
+            "css": "input[name='clientInput'], input.form-control-lg[type='text']",
+            "xpath": "//input[@name='clientInput']",
             "text": None,
             "description": "Subscription code input field",
-            # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/div/input
         },
         "search_button": {
-            "css": "form div div button, form button[type='submit'], form .btn",
-            "xpath": "//form//button[contains(@class, 'btn')]",
+            "css": "button.btn-primary.btn-lg[type='submit'], .input-group-append button.btn-primary",
+            "xpath": "//button[contains(@class, 'btn-primary') and contains(@class, 'btn-lg')]",
             "text": "Cauta",
             "description": "Search/submit button",
-            # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/div/div/button
         },
         "reservation_count_span": {
             "css": "form button span:nth-child(2), form button span",
@@ -540,35 +538,32 @@ class SelectorRegistry:
             # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/h5
         },
         "sauna_option_button": {
-            "css": "form button, form .btn",
-            "xpath": "//form/button[contains(@class, 'btn')]",
+            "css": "button.resource, button.btn-outline-primary.btn-block",
+            "xpath": "//button[contains(@class, 'resource')]",
             "text": "Sauna",
             "description": "Sauna service selection button",
-            # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/form/button
         },
         "calendar_table": {
-            "css": ".datepicker table tbody, table.table tbody, .datepicker tbody, table tbody",
-            "xpath": "/html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/tbody | //table[contains(@class, 'datepicker')]//tbody | //div[contains(@class, 'datepicker')]//table/tbody",
+            "css": ".datepicker-days table.table-condensed tbody, .datepicker-days tbody",
+            "xpath": "//div[contains(@class, 'datepicker-days')]//table//tbody",
             "text": None,
             "description": "Calendar date picker table body",
-            # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/tbody
         },
         "calendar_header": {
-            "css": "table thead tr th:nth-child(2), .datepicker-switch",
-            "xpath": "//table/thead/tr[1]/th[2]",
+            "css": "th.datepicker-switch, .datepicker-days th.datepicker-switch",
+            "xpath": "//th[contains(@class, 'datepicker-switch')]",
             "text": None,
             "description": "Calendar month/year header",
         },
         "next_month_arrow": {
-            "css": "table thead tr th.next, th.next, .datepicker th.next",
-            "xpath": "//table/thead/tr[2]/th[3]",
-            "text": ">",
+            "css": ".datepicker-days th.next:not(.disabled), th.next:not(.disabled)",
+            "xpath": "//div[contains(@class, 'datepicker-days')]//th[contains(@class, 'next') and not(contains(@class, 'disabled'))]",
+            "text": None,
             "description": "Next month navigation arrow",
-            # Legacy: /html/body/div[1]/div/div/div[1]/div[2]/div/div/div/div/div[2]/div/div/div/div/div/div[1]/table/thead/tr[2]/th[3]
         },
         "time_slot": {
-            "css": ".alert-outline-primary, .time-slot, .slot-available, [class*='alert'][class*='primary']",
-            "xpath": "//div[contains(@class, 'alert') and contains(@class, 'primary')]",
+            "css": "div.alert.alert-outline-primary, div.alert-custom.alert-outline-primary",
+            "xpath": "//div[contains(@class, 'alert') and contains(@class, 'alert-outline-primary')]",
             "text": "Locuri disponibile",
             "description": "Available time slot element",
         },
@@ -1461,6 +1456,10 @@ class AvailabilityCollector:
                     f"Colectat {len(slots)} sloturi pentru {date_str}",
                     f"Collected {len(slots)} slots for {date_str}"
                 )
+
+            # Navigate back to calendar to process next date
+            self.driver.back()
+            time.sleep(1)  # Wait for calendar to reload
 
             return slots_logged
 
