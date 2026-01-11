@@ -48,6 +48,37 @@ class ExitCode:
     UNKNOWN_ERROR = 99
 
 
+class TimingConfig:
+    """
+    Timing configuration for different operation modes.
+    Aggressive timings for collection, conservative for interactive.
+    """
+    INTERACTIVE = {
+        'page_load': 1.0,
+        'subscription_input': 0.5,
+        'sauna_click': 2.0,
+        'calendar_nav': 0.5,
+        'next_month': 0.5,
+        'date_click': 0.5,
+        'back_reload': 1.0,
+    }
+
+    COLLECT = {
+        'page_load': 0.3,
+        'subscription_input': 0.15,
+        'sauna_click': 0.5,
+        'calendar_nav': 0.15,
+        'next_month': 0.15,
+        'date_click': 0.15,
+        'back_reload': 0.3,
+    }
+
+    @classmethod
+    def get(cls, mode='interactive'):
+        """Get timing config for mode. mode='collect' for fast, else conservative."""
+        return cls.COLLECT if mode == 'collect' else cls.INTERACTIVE
+
+
 # =============================================================================
 # CREDENTIALS LOADING
 # =============================================================================
@@ -1103,13 +1134,14 @@ class AvailabilityCollector:
     No user interaction, just logs availability data.
     """
 
-    def __init__(self, driver, db_manager, logger, element_finder, verifier):
+    def __init__(self, driver, db_manager, logger, element_finder, verifier, timing=None):
         self.driver = driver
         self.db = db_manager
         self.logger = logger
         self.finder = element_finder
         self.verifier = verifier
         self.session_id = None
+        self.timing = timing or TimingConfig.COLLECT
 
     def collect_all_subscriptions(self, subscription_codes):
         """
@@ -1172,13 +1204,13 @@ class AvailabilityCollector:
 
         # Navigate to the booking page
         self.driver.get("https://bpsb.registo.ro/client-interface/appointment-subscription/step1")
-        time.sleep(1)
+        time.sleep(self.timing['page_load'])
 
         # Enter subscription code
         try:
             self.finder.input_text("subscription_input", code)
             self.finder.wait_and_click("search_button")
-            time.sleep(0.5)
+            time.sleep(self.timing['subscription_input'])
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Nu s-a putut introduce codul", f"Failed to enter code: {e}")
@@ -1194,10 +1226,10 @@ class AvailabilityCollector:
         # Click sauna option
         try:
             self.finder.wait_and_click("sauna_option_button")
-            time.sleep(2)  # Wait for calendar to load (increased from 0.5s)
+            time.sleep(self.timing['sauna_click'])
         except Exception as e:
             if self.logger:
-                self.logger.error(f"Nu s-a putut selecta opțiunea", f"Failed to click sauna option: {e}")
+                self.logger.error(f"Nu s-a putut selecta optiunea", f"Failed to click sauna option: {e}")
             raise
 
         # Get available dates from calendar (use longer timeout)
@@ -1210,7 +1242,7 @@ class AvailabilityCollector:
             month_name, year = self._get_current_calendar_month()
             if self.logger:
                 self.logger.debug(
-                    f"Se procesează luna: {month_name} {year}",
+                    f"Se proceseaza luna: {month_name} {year}",
                     f"Processing month: {month_name} {year}"
                 )
 
@@ -1220,7 +1252,7 @@ class AvailabilityCollector:
 
             if self.logger and date_strings:
                 self.logger.debug(
-                    f"S-au găsit {len(date_strings)} date noi în {month_name}",
+                    f"S-au gasit {len(date_strings)} date noi in {month_name}",
                     f"Found {len(date_strings)} new dates in {month_name}"
                 )
 
@@ -1240,9 +1272,9 @@ class AvailabilityCollector:
                             "Cannot navigate further, stopping"
                         )
                     break  # Cannot navigate further
-                time.sleep(0.5)  # Wait for calendar to update
+                time.sleep(self.timing['calendar_nav'])
 
-        return collected_count
+        return collected_countt
 
     def _extract_available_dates(self):
         """Extract available dates from the calendar."""
@@ -1391,12 +1423,12 @@ class AvailabilityCollector:
         """Navigate to the next month in the calendar. Returns True if successful."""
         try:
             self.finder.wait_and_click("next_month_arrow")
-            time.sleep(0.5)  # Wait for calendar to update
+            time.sleep(self.timing['next_month'])
             return True
         except Exception as e:
             if self.logger:
                 self.logger.debug(
-                    "Nu s-a putut naviga la luna următoare",
+                    "Nu s-a putut naviga la luna urmatoare",
                     f"Could not navigate to next month: {e}"
                 )
             return False
@@ -1427,14 +1459,14 @@ class AvailabilityCollector:
             if not date_element:
                 if self.logger:
                     self.logger.debug(
-                        f"Nu s-a găsit data {date_str}",
+                        f"Nu s-a gasit data {date_str}",
                         f"Date {date_str} not found in calendar"
                     )
                 return 0
 
             # Click on the date to see slots
             date_element.click()
-            time.sleep(0.5)
+            time.sleep(self.timing['date_click'])
 
             # Get slots for this date
             slots = self._extract_slots_for_date()
@@ -1459,14 +1491,14 @@ class AvailabilityCollector:
 
             # Navigate back to calendar to process next date
             self.driver.back()
-            time.sleep(1)  # Wait for calendar to reload
+            time.sleep(self.timing['back_reload'])
 
             return slots_logged
 
         except StaleElementReferenceException:
             if self.logger:
                 self.logger.debug(
-                    f"Element învechit pentru {date_str}, se sare",
+                    f"Element invechit pentru {date_str}, se sare",
                     f"Stale element for {date_str}, skipping"
                 )
             return 0
@@ -1487,6 +1519,28 @@ class AvailabilityCollector:
 # =============================================================================
 # HELPER FUNCTIONS (ORIGINAL - kept for backward compatibility)
 # =============================================================================
+
+def get_day_name_ro(date_str):
+    """
+    Get Romanian day name from a date string in DD-MM-YYYY format.
+    Returns the day name in Romanian (e.g., "Luni", "Marți", etc.)
+    """
+    day_names_ro = {
+        0: "Luni",
+        1: "Marți",
+        2: "Miercuri",
+        3: "Joi",
+        4: "Vineri",
+        5: "Sâmbătă",
+        6: "Duminică"
+    }
+    try:
+        # Parse DD-MM-YYYY format
+        date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+        return day_names_ro[date_obj.weekday()]
+    except (ValueError, KeyError):
+        return ""
+
 
 def parse_slot_info(slot_element):
     """
@@ -1736,61 +1790,37 @@ def check_for_subscription_error(driver):
 
 def choose_subscription_code():
     """
-    Read subscription codes from input.csv and help user choose between available codes.
+    Load subscription codes from environment variable and help user choose.
     """
-    try:
-        # Try to read subscription codes from CSV file
-        codes = []
-        with open('input.csv', 'r', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                if 'code' in row and 'name' in row and row['code'].strip() and row['name'].strip():
-                    codes.append({
-                        'code': row['code'].strip(),
-                        'name': row['name'].strip()
-                    })
-        
-        if not codes:
-            raise ValueError("Nu s-au găsit coduri valide în input.csv")
-        
-        # Display available codes
-        print("\\nCoduri de abonament disponibile:")
-        for i, code_info in enumerate(codes, 1):
-            print(f"{i}. {code_info['code']} {code_info['name']}")
-        
-        # Get user selection
-        while True:
-            try:
-                choice = input(f"\\nVă rugăm selectați un cod (1-{len(codes)}): ")
-                choice_num = int(choice)
+    codes = load_subscription_codes()
+    
+    if not codes:
+        print("\n[X] Nu s-au gasit coduri de abonament!")
+        print("Configurati variabila NEPTUN_SUBSCRIPTIONS in fisierul .env")
+        print("Format: NEPTUN_SUBSCRIPTIONS='cod1:nume1,cod2:nume2'")
+        print("Exemplu: NEPTUN_SUBSCRIPTIONS='5642ece785:Kicky,3adc06c0e8:Adrian'")
+        sys.exit(ExitCode.INVALID_SUBSCRIPTION)
+    
+    # Display available codes
+    print("\nCoduri de abonament disponibile:")
+    for i, code_info in enumerate(codes, 1):
+        print(f"{i}. {code_info['code']} {code_info['name']}")
+    
+    # Get user selection
+    while True:
+        try:
+            choice = input(f"\nVa rugam selectati un cod (1-{len(codes)}): ")
+            choice_num = int(choice)
+            
+            if 1 <= choice_num <= len(codes):
+                selected_code = codes[choice_num - 1]['code']
+                print(f"Cod selectat: {selected_code} ({codes[choice_num - 1]['name']})")
+                return selected_code
+            else:
+                print(f"Alegere invalida. Va rugam selectati intre 1 si {len(codes)}.")
                 
-                if 1 <= choice_num <= len(codes):
-                    selected_code = codes[choice_num - 1]['code']
-                    print(f"Cod selectat: {selected_code} ({codes[choice_num - 1]['name']})")
-                    return selected_code
-                else:
-                    print(f"Alegere invalidă. Vă rugăm selectați între 1 și {len(codes)}.")
-                    
-            except ValueError:
-                print("Vă rugăm introduceți un număr valid.")
-    
-    except FileNotFoundError:
-        print("\\n❌ Fișierul input.csv nu a fost găsit!")
-        print("Creați fișierul input.csv cu următorul format:")
-        print("code,name")
-        print("5642ece785,Kicky")
-        print("3adc06c0e8,Adrian")
-        print("\\nSe folosesc codurile implicite pentru această sesiune...")
-        
-        # Fallback to hardcoded values
-        return choose_subscription_code_fallback()
-    
-    except Exception as e:
-        print(f"\\n❌ Eroare la citirea fișierului input.csv: {str(e)}")
-        print("Se folosesc codurile implicite pentru această sesiune...")
-        
-        # Fallback to hardcoded values
-        return choose_subscription_code_fallback()
+        except ValueError:
+            print("Va rugam introduceti un numar valid.")
 
 
 def choose_subscription_code_fallback():
@@ -1914,20 +1944,37 @@ def get_available_dates(driver, table_xpath):
         now = datetime.now()
         current_month = f"{now.month:02d}"
         current_year = str(now.year)
-        print(f"Nu s-a putut extrage antetul calendarului, se folosește luna/anul curent:")
+        print(f"Nu s-a putut extrage antetul calendarului, se folosește luna/anul curent (cu detecție automată a lunii următoare):")
 
     # Find all date cells
     date_cells = table.find_elements(By.TAG_NAME, "td")
+
+    # Track previous day to detect month wrap-around
+    prev_day = 0
 
     for cell in date_cells:
         # Check if the cell is not disabled
         if "disabled" not in cell.get_attribute("class"):
             date_text = cell.text
             if date_text.strip():  # Ensure the cell contains a date
+                day_num = int(date_text.strip())
+
+                # Detect month wrap-around (e.g., 31 -> 3 means we crossed into next month)
+                if prev_day > 20 and day_num < 10:
+                    # Increment month
+                    month_int = int(current_month)
+                    if month_int == 12:
+                        current_month = "01"
+                        current_year = str(int(current_year) + 1)
+                    else:
+                        current_month = f"{month_int + 1:02d}"
+
+                prev_day = day_num
+
                 # Format as DD-MM-YYYY
-                day = date_text.strip().zfill(2)  # Pad single digits with leading zero
+                day = str(day_num).zfill(2)  # Pad single digits with leading zero
                 formatted_date = f"{day}-{current_month}-{current_year}"
-                
+
                 available_dates.append({
                     "date": formatted_date,
                     "element": cell
@@ -2700,7 +2747,8 @@ def automate_website_interaction(headless=False):
         if available_dates:
             print("\nDate disponibile găsite:")
             for i, date_info in enumerate(available_dates, 1):
-                print(f"{i}. {date_info['date']}")
+                day_name = get_day_name_ro(date_info['date'])
+                print(f"{i}. {date_info['date']} ({day_name})")
 
             # Let user choose a date
             while True:
@@ -2708,7 +2756,8 @@ def automate_website_interaction(headless=False):
                     choice = int(input("\nVă rugăm selectați numărul datei: "))
                     if 1 <= choice <= len(available_dates):
                         selected_date = available_dates[choice - 1]
-                        print(f"\nData selectată: {selected_date['date']}")
+                        day_name = get_day_name_ro(selected_date['date'])
+                        print(f"\nData selectată: {selected_date['date']} ({day_name})")
                         # Click the selected date
                         selected_date['element'].click()
                         break
@@ -2825,23 +2874,32 @@ def automate_website_interaction(headless=False):
 
 def load_subscription_codes():
     """
-    Load subscription codes from input.csv file.
+    Load subscription codes from NEPTUN_SUBSCRIPTIONS environment variable.
+    
+    Format: 'code1:name1,code2:name2'
+    Example: '5642ece785:Kicky,3adc06c0e8:Adrian'
+    
     Returns a list of dicts with 'code' and 'name' keys.
     """
+    env_value = os.getenv('NEPTUN_SUBSCRIPTIONS', '').strip()
+    
+    if not env_value:
+        return []
+    
+    # Remove surrounding quotes if present
+    if env_value and env_value[0] in "'\"" and env_value[-1] in "'\"":
+        env_value = env_value[1:-1]
+    
     codes = []
-    try:
-        with open('input.csv', 'r', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                if 'code' in row and 'name' in row and row['code'].strip() and row['name'].strip():
-                    codes.append({
-                        'code': row['code'].strip(),
-                        'name': row['name'].strip()
-                    })
-    except FileNotFoundError:
-        pass  # Return empty list
-    except Exception:
-        pass
+    for pair in env_value.split(','):
+        pair = pair.strip()
+        if ':' in pair:
+            code, name = pair.split(':', 1)
+            code = code.strip()
+            name = name.strip()
+            if code and name:
+                codes.append({'code': code, 'name': name})
+    
     return codes
 
 
